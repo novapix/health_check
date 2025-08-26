@@ -12,7 +12,7 @@ import redis.asyncio as aioredis
 from datetime import datetime,timedelta
 import pytz
 from loguru import logger
-
+from aiohttp import web
 # --- Configuration & Logging ---
 load_dotenv()
 logger.remove()
@@ -32,10 +32,23 @@ REDIS_URL = os.getenv("REDIS_URL") or f"redis://:{os.getenv('REDIS_PASSWORD')}@{
 
 MAX_RETRIES = 3
 BACKOFF_BASE = 2  # sleep for 2^0, 2^1, 2^2 seconds
-
-
 timezone = pytz.timezone('Asia/Kathmandu')
 
+latest_status_report: dict[str, str] = {}
+
+async def handle_health(request):
+    return web.json_response({"status": "ok", "message": "Service is running."})
+
+async def handle_status(request):
+    if not latest_status_report:
+        return web.json_response({"status": "pending", "message": "Health check not run yet."}, status=503)
+    return web.json_response(latest_status_report)
+
+async def create_app():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/status", handle_status)
+    return app
 
 async def get_async_supabase() -> AsyncClient:
     return await acreate_client(SUPABASE_URL, SUPABASE_KEY)
@@ -192,10 +205,14 @@ async def run_health_checks():
         "Pinecone": results[2],
         "Redis": results[3],
     }
-
     logger.info("📊 Health check complete. Sending report to Discord...")
     await send_to_discord(status_report)
     logger.info("✅ Job finished. Waiting for the next scheduled run.")
+    global latest_status_report
+    # latest_status_report.clear()
+    latest_status_report = status_report
+    latest_status_report["last_checked"]=datetime.now(timezone).isoformat()
+
 
 async def main():
     """Sets up the scheduler and runs the main application loop."""
@@ -206,12 +223,23 @@ async def main():
     logger.info("🚀 Scheduler initialized. The first check will run immediately.")
     await run_health_checks()
 
-    # Keep the script running
+    app = await create_app()
+
+    # Start HTTP server on port 8000
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8000)
+    await site.start()
+
+    logger.info("HTTP server running at http://0.0.0.0:8000/")
+
+
     try:
-        while True:
-            await asyncio.sleep(3600) # Sleep for an hour or indefinitely
+        # Wait indefinitely until interrupted
+        await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Scheduler stopped.")
+        logger.info("Shutting down...")
+        await runner.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())
