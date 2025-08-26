@@ -48,7 +48,17 @@ async def create_app():
     app = web.Application()
     app.router.add_get("/", handle_health)
     app.router.add_get("/status", handle_status)
+
+    # Start scheduler and run initial health check
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(run_health_checks, 'interval', hours=1)
+    scheduler.start()
+
+    logger.info("🚀 Scheduler initialized.")
+    await run_health_checks()
+
     return app
+
 
 async def get_async_supabase() -> AsyncClient:
     return await acreate_client(SUPABASE_URL, SUPABASE_KEY)
@@ -213,33 +223,36 @@ async def run_health_checks():
     latest_status_report = status_report
     latest_status_report["last_checked"]=datetime.now(timezone).isoformat()
 
-
-async def main():
-    """Sets up the scheduler and runs the main application loop."""
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(run_health_checks, 'interval', hours=1)
-    scheduler.start()
-
-    logger.info("🚀 Scheduler initialized. The first check will run immediately.")
-    await run_health_checks()
-
-    app = await create_app()
-
-    # Start HTTP server on port 8000
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8000)
-    await site.start()
-
-    logger.info("HTTP server running at http://0.0.0.0:8000/")
-
-
-    try:
-        # Wait indefinitely until interrupted
-        await asyncio.Event().wait()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutting down...")
-        await runner.cleanup()
+#
+# async def main():
+#     """Sets up the scheduler and runs the main application loop."""
+#     scheduler = AsyncIOScheduler()
+#     scheduler.add_job(run_health_checks, 'interval', hours=1)
+#     scheduler.start()
+#
+#     logger.info("🚀 Scheduler initialized. The first check will run immediately.")
+#     await run_health_checks()
+#
+#     app = await create_app()
+#
+#     # Start HTTP server on port 8000
+#     runner = web.AppRunner(app)
+#     await runner.setup()
+#     site = web.TCPSite(runner, "0.0.0.0", 8000)
+#     await site.start()
+#
+#     logger.info("HTTP server running at http://0.0.0.0:8000/")
+#
+#
+#     try:
+#         # Wait indefinitely until interrupted
+#         await asyncio.Event().wait()
+#     except (KeyboardInterrupt, SystemExit):
+#         logger.info("Shutting down...")
+#         await runner.cleanup()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    load_dotenv()
+    app = asyncio.run(create_app())
+    logger.info("🌐 Starting web server...")
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
