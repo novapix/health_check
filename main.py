@@ -7,6 +7,8 @@ from supabase import acreate_client, AsyncClient
 from neo4j import AsyncGraphDatabase
 from pinecone import Pinecone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import redis.asyncio as aioredis
+
 from datetime import datetime,timedelta
 import pytz
 from loguru import logger
@@ -24,6 +26,9 @@ NEO4J_USER = os.getenv("NEO4J_USER")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+# REDIS_URL = os.getenv("REDIS_URL")
+REDIS_URL = os.getenv("REDIS_URL") or f"redis://:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}:{os.getenv('REDIS_PORT')}/0"
+
 
 MAX_RETRIES = 3
 BACKOFF_BASE = 2  # sleep for 2^0, 2^1, 2^2 seconds
@@ -99,6 +104,31 @@ async def check_pinecone() -> str:
             await asyncio.sleep(BACKOFF_BASE**attempt)
     return "error: All retry attempts failed"
 
+
+async def check_redis() -> str:
+    """Pings Redis with retries and exponential backoff."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            logger.info(f"Checking Redis connection (attempt {attempt + 1})...")
+            if not REDIS_URL:
+                return "error: Redis URL not configured"
+
+            redis = aioredis.from_url(REDIS_URL)
+            pong = await redis.ping()
+
+            if pong:
+                logger.info("Redis ping successful.")
+                return "healthy (ping successful)"
+            else:
+                return "warning: Redis responded but did not pong"
+        except Exception as e:
+            logger.warning(f"Redis health check failed (attempt {attempt + 1}): {e}")
+            if attempt == MAX_RETRIES - 1:
+                return f"error: {str(e)}"
+            await asyncio.sleep(BACKOFF_BASE ** attempt)
+
+    return "error: All retry attempts failed"
+
 async def send_to_discord(status_report: dict[str, str]):
     """Formats and sends the health check status report to a Discord webhook."""
     if not DISCORD_WEBHOOK_URL:
@@ -154,11 +184,13 @@ async def run_health_checks():
         check_supabase(),
         check_neo4j(),
         check_pinecone(),
+        check_redis(),
     )
     status_report = {
         "Supabase": results[0],
         "Neo4j": results[1],
         "Pinecone": results[2],
+        "Redis": results[3],
     }
 
     logger.info("📊 Health check complete. Sending report to Discord...")
