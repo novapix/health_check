@@ -7,6 +7,7 @@ from supabase import acreate_client, AsyncClient
 from neo4j import AsyncGraphDatabase
 from pinecone import Pinecone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.events import EVENT_JOB_ERROR
 import redis.asyncio as aioredis
 
 from datetime import datetime,timedelta
@@ -35,6 +36,7 @@ BACKOFF_BASE = 2  # sleep for 2^0, 2^1, 2^2 seconds
 timezone = pytz.timezone('Asia/Kathmandu')
 
 latest_status_report: dict[str, str] = {}
+scheduler = AsyncIOScheduler()
 
 async def handle_health(request):
     return web.json_response({"status": "ok", "message": "Service is running."})
@@ -44,20 +46,6 @@ async def handle_status(request):
         return web.json_response({"status": "pending", "message": "Health check not run yet."}, status=503)
     return web.json_response(latest_status_report)
 
-async def create_app():
-    app = web.Application()
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/status", handle_status)
-
-    # Start scheduler and run initial health check
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(run_health_checks, 'interval', hours=1)
-    scheduler.start()
-
-    logger.info("🚀 Scheduler initialized.")
-    await run_health_checks()
-
-    return app
 
 
 async def get_async_supabase() -> AsyncClient:
@@ -223,6 +211,28 @@ async def run_health_checks():
     latest_status_report = status_report
     latest_status_report["last_checked"]=datetime.now(timezone).isoformat()
 
+def job_listener(event):
+    if event.exception:
+        logger.error("❌ Scheduled job crashed!", exc_info=event.exception)
+    else:
+        logger.debug("✅ Scheduled job ran successfully.")
+
+async def on_startup(app):
+    # Schedule recurring health check
+    scheduler.add_job(run_health_checks, 'interval', hours=1)
+    scheduler.add_listener(job_listener, EVENT_JOB_ERROR)
+    scheduler.start()
+    logger.info("🚀 Scheduler initialized.")
+
+    # Run immediately on startup
+    await run_health_checks()
+
+def create_app():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/status", handle_status)
+    app.on_startup.append(on_startup)
+    return app
 #
 # async def main():
 #     """Sets up the scheduler and runs the main application loop."""
@@ -253,6 +263,5 @@ async def run_health_checks():
 
 if __name__ == "__main__":
     load_dotenv()
-    app = asyncio.run(create_app())
     logger.info("🌐 Starting web server...")
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    web.run_app(create_app(), host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
