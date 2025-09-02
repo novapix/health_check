@@ -80,6 +80,11 @@ async def check_neo4j() -> str:
 
             async with AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD)) as driver:
                 await driver.verify_connectivity()
+                result = await driver.execute_query("RETURN 1 AS test")
+
+                records = result.records
+                for record in records:
+                    logger.info(record["test"])
             logger.info("Neo4j connection verified successfully.")
             return "healthy (connection verified)"
 
